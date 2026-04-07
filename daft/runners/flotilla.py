@@ -127,6 +127,10 @@ class RaySwordfishActor:
         self.native_executor = NativeExecutor(is_flotilla_worker=True, ip=self.ip)
         self.port = self.native_executor.shuffle_port()
 
+        from daft.execution.dependency_manager import DefaultDependencyManager
+
+        self._dependency_manager = DefaultDependencyManager()
+
     def get_address(self) -> str:
         return f"grpc://{self.ip}:{self.port}"
 
@@ -154,11 +158,21 @@ class RaySwordfishActor:
         plan: LocalPhysicalPlan,
         exec_cfg: PyDaftExecutionConfig,
         context: dict[str, str] | None,
+        resource_dependencies: bytes | None = None,
         **inputs: (
             Input | list[ray.ObjectRef]
         ),  # PyMicroPartitions are separated from Inputs because they are Ray ObjectRefs, which will be resolved by Ray.
     ) -> AsyncGenerator[MicroPartition | SwordfishTaskMetadata, None]:
         """Run a plan on swordfish and yield partitions."""
+        # Resolve resource dependencies before execution
+        if resource_dependencies is not None:
+            from daft.execution.resource_dependency import ResourceDependencies
+            from daft.pickle import pickle
+
+            deps = pickle.loads(resource_dependencies)
+            if isinstance(deps, ResourceDependencies) and not deps.is_empty():
+                self._dependency_manager.resolve(deps)
+
         # We import PyDaftContext inside the function because PyDaftContext is not serializable.
         from daft.daft import PyDaftContext
 
@@ -192,8 +206,18 @@ class RaySwordfishActor:
         plan: LocalPhysicalPlan,
         exec_cfg: PyDaftExecutionConfig,
         context: dict[str, str] | None,
+        resource_dependencies: bytes | None = None,
         **inputs: Input | list[ray.ObjectRef],
     ) -> ShufflePlanResult:
+        # Resolve resource dependencies before execution
+        if resource_dependencies is not None:
+            from daft.execution.resource_dependency import ResourceDependencies
+            from daft.pickle import pickle
+
+            deps = pickle.loads(resource_dependencies)
+            if isinstance(deps, ResourceDependencies) and not deps.is_empty():
+                self._dependency_manager.resolve(deps)
+
         from daft.daft import PyDaftContext
 
         with profile():
@@ -359,11 +383,13 @@ class RaySwordfishActorHandle:
         for source_id, refs in task.psets().items():
             inputs[str(source_id)] = [ref.object_ref for ref in refs]
         shuffle_write_info = plan.shuffle_write_info()
+        resource_deps = task.resource_dependencies()
         if shuffle_write_info is None:
             result_handle = self.actor_handle.run_plan.options(name=task.name()).remote(
                 plan,
                 task.config(),
                 task.context(),
+                resource_dependencies=resource_deps,
                 **inputs,
             )
         else:
@@ -371,6 +397,7 @@ class RaySwordfishActorHandle:
                 plan,
                 task.config(),
                 task.context(),
+                resource_dependencies=resource_deps,
                 **inputs,
             )
         return RaySwordfishTaskHandle(

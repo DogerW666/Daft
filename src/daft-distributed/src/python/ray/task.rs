@@ -3,7 +3,7 @@ use std::{any::Any, collections::HashMap, future::Future, sync::Arc};
 use common_daft_config::PyDaftExecutionConfig;
 use common_partitioning::{Partition, PartitionRef};
 use daft_local_plan::{ExecutionStats, PyLocalPhysicalPlan, SourceId, python::PyInput};
-use pyo3::{Py, PyAny, PyResult, Python, pyclass, pymethods};
+use pyo3::{Bound, Py, PyAny, PyResult, Python, pyclass, pymethods, types::PyBytes};
 
 use crate::{
     pipeline_node::{
@@ -347,5 +347,11 @@ impl RaySwordfishTask {
     fn config(&self) -> PyResult<PyDaftExecutionConfig> {
         let config = self.task.config().clone();
         Ok(PyDaftExecutionConfig { config })
+    }
+
+    fn resource_dependencies<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyBytes>> {
+        self.task
+            .resource_dependencies()
+            .map(|bytes| PyBytes::new(py, bytes))
     }
 }

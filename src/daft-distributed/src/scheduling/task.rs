@@ -224,6 +224,7 @@ pub(crate) struct SwordfishTask {
     psets: HashMap<SourceId, Vec<PartitionRef>>,
     strategy: SchedulingStrategy,
     context: HashMap<String, String>,
+    resource_dependencies: Option<Vec<u8>>,
 }
 
 impl SwordfishTask {
@@ -249,6 +250,10 @@ impl SwordfishTask {
 
     pub fn name(&self) -> String {
         self.plan.single_line_display()
+    }
+
+    pub fn resource_dependencies(&self) -> Option<&[u8]> {
+        self.resource_dependencies.as_deref()
     }
 }
 
@@ -303,6 +308,7 @@ pub(crate) struct SwordfishTaskBuilder {
     /// Fingerprint identifying tasks with functionally identical plans.
     /// Assigned by pipeline nodes: tasks with the same fingerprint can share a pipeline.
     plan_fingerprint: PlanFingerprint,
+    resource_dependencies: Option<Vec<u8>>,
 }
 
 impl SwordfishTaskBuilder {
@@ -325,6 +331,7 @@ impl SwordfishTaskBuilder {
             pending_node_ids: vec![node.node_id()],
             notify_tokens: vec![],
             plan_fingerprint,
+            resource_dependencies: None,
         }
     }
 
@@ -398,6 +405,14 @@ impl SwordfishTaskBuilder {
             pending_node_ids,
             notify_tokens: vec![],
             plan_fingerprint,
+            // Resource dependencies are serialized Python objects (cloudpickle).
+            // We cannot merge two serialized blobs by concatenation since pickle.loads
+            // only deserializes the first object. Instead, prefer left, fall back to right.
+            // True merge should happen at the Python layer via ResourceDependencies.merge().
+            resource_dependencies: left
+                .resource_dependencies
+                .clone()
+                .or_else(|| right.resource_dependencies.clone()),
         }
     }
 
@@ -432,6 +447,12 @@ impl SwordfishTaskBuilder {
         inputs: Vec<FlightShuffleReadInput>,
     ) -> Self {
         self.inputs.insert(source_id, Input::FlightShuffle(inputs));
+        self
+    }
+
+    /// Set resource dependencies (serialized Python ResourceDependencies object).
+    pub fn with_resource_dependencies(mut self, deps: Option<Vec<u8>>) -> Self {
+        self.resource_dependencies = deps;
         self
     }
 
@@ -481,6 +502,7 @@ impl SwordfishTaskBuilder {
             psets: self.psets,
             strategy,
             context,
+            resource_dependencies: self.resource_dependencies,
         };
 
         let cancel_token = CancellationToken::new();
